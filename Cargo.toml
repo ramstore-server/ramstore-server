@@ -6,9 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rustix-uring = "0.1.1"
-
-[dependencies.rustix]
-version = "0.38.10"
-default-features = false
-features = ["io_uring", "mm", "time"]
+anyhow = "1.0.75"
+libc = "0.2.147"
+io-uring = {version = "0.6.1", features = ["direct-syscall", "io_safety"]}
+log = "0.4.20"
+env_logger = "0.10.0"
