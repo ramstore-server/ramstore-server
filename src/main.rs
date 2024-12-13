@@ -35,8 +35,9 @@ fn accept_loop(accept_ring: &mut IoUring, redis_listen_socket: OwnedFd, echo_han
         types::Fd { 0: redis_listen_socket.as_raw_fd() }
     ).build();
     unsafe {
-        accept_ring.submission().push(&accept_e).unwrap();
-        accept_ring.submission().sync();
+        let mut sq = accept_ring.submission();
+        sq.push(&accept_e).unwrap();
+        sq.sync();
     }
 
     loop {
@@ -47,17 +48,21 @@ fn accept_loop(accept_ring: &mut IoUring, redis_listen_socket: OwnedFd, echo_han
         }
 
         unsafe {
-            loop {
-                let cq = accept_ring.completion_shared();
+            loop { // loop to pick up any completions that are published while we're processing
+                let mut cq = accept_ring.completion_shared();
                 if cq.is_empty() {
                     break;
                 }
+                let mut sq = accept_ring.submission_shared();
 
-                for cqe in cq {
+                while let Some(cqe) = cq.next() {
                     let conn_fd = cqe.result();
                     let send_sqe = echo_handle.create_send_sqe(UringMsg::NewConnection(conn_fd));
-                    accept_ring.submission_shared().push(&send_sqe).unwrap();
+                    sq.push(&send_sqe).unwrap();
                 }
+
+                cq.sync();
+                sq.sync();
             }
         }
     }
@@ -71,14 +76,15 @@ fn echo_loop(echo_ring: &mut IoUring) {
             Err(_) => (),
         }
 
-        loop {
+        loop { // loop to pick up any completions that are published while we're processing
             unsafe {
-                let cq = echo_ring.completion_shared();
+                let mut cq = echo_ring.completion_shared();
                 if cq.is_empty() {
                     break;
                 }
+                let mut sq = echo_ring.submission_shared();
 
-                for cqe in cq {
+                while let Some(cqe) = cq.next() {
                     let handled = match UringMsg::try_from_cqe(&cqe) {
                         Some(UringMsg::NewConnection(fd)) => {
                             let conn = Box::leak(Box::new(echo::Connection::new(fd)));
@@ -95,12 +101,15 @@ fn echo_loop(echo_ring: &mut IoUring) {
                     let mut conn = Box::from_raw(cqe.user_data() as *mut echo::Connection);
                     match conn.process_cqe(&cqe) {
                         Some(sqe) => {
-                            echo_ring.submission_shared().push(&sqe).unwrap();
+                            sq.push(&sqe).unwrap();
                             Box::leak(conn);
                         }
                         None => (), // let the connection drop, we are done
                     }
                 }
+
+                cq.sync();
+                sq.sync();
             }
         }
     }
